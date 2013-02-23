@@ -1,0 +1,11 @@
+total_keys=1000000
+value_size=512
+value_size=128
+cols_per_key_read=5
+cols_per_key_write=5
+keys_per_read=5
+keys_per_write=5
+write_frac=0.1
+write_trans_frac=0.5
+run_time=40
+trial=1

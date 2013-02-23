@@ -1,0 +1,10 @@
+num_dcs=2
+cassandra_ips=node52.princeton.vicci.org
+cassandra_ips=node53.princeton.vicci.org
+cassandra_ips=node54.princeton.vicci.org
+cassandra_ips=node42.princeton.vicci.org
+
+cassandra_ips=node57.princeton.vicci.org
+cassandra_ips=node58.princeton.vicci.org
+cassandra_ips=node59.princeton.vicci.org
+cassandra_ips=node60.princeton.vicci.org

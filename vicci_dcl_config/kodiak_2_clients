@@ -1,0 +1,3 @@
+num_dcs=2
+cassandra_ips=h2.ib0
+cassandra_ips=h3.ib0

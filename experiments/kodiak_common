@@ -1,0 +1,248 @@
+
+    cops_cluster_start_cmd() {
+	internal_cluster_start_cmd $cops_dir
+    }
+
+    vanilla_cluster_start_cmd() {
+	internal_cluster_start_cmd $vanilla_dir
+    }
+
+    #get cluster up an running
+    internal_cluster_start_cmd() {
+	cur_dir=$PWD
+	src_dir=$1
+	cd ${src_dir};
+	$kill_all_cmd;
+	sleep 1;
+	while [ 1 ]; do
+	    ./kodiak_dc_launcher.bash ${dcl_config_full}
+	    return_value=$?
+	    if [ $return_value -eq 0 ]; then
+		break
+	    fi
+	done
+	cd $cur_dir;
+    }
+
+    cops_populate_cluster() {
+	internal_populate_cluster $cops_dir INSERTCL $@
+    }
+
+    vanilla_populate_cluster() {
+	internal_populate_cluster $vanilla_dir INSERT $@
+    }
+
+    #all_servers is set above
+    #num_clients is set above
+    #all_clients is set above
+    internal_populate_cluster() {
+	src_dir=$1
+	insert_cmd=$2
+	total_keys=$3
+	max_columns=$4
+	column_size=$5
+	column_per_key_write=$6
+
+	#set the keyspace
+	for i in $(seq 3); do
+	    first_dc_servers_csv=$(echo ${servers_by_dc[0]} | sed 's/ /,/g')
+
+	    # set up a killall for stress in case it hangs
+	    (sleep 60; killall stress) &
+	    killall_jck_pid=$!
+	    ${src_dir}/tools/stress/bin/stress --nodes=$first_dc_servers_csv --just-create-keyspace --replication-strategy=NetworkTopologyStrategy --strategy-properties=$strategy_properties
+	    kill $killall_jck_pid
+	    sleep 5
+	done
+	sleep 30
+
+
+      populate_attempts=0
+      while [ 1 ]; do
+
+        KILLALL_SSH_TIME=90
+	MAX_ATTEMPTS=10
+	(sleep $KILLALL_SSH_TIME; killall ssh) &
+	killall_ssh_pid=$!
+
+	#divide keys across first cluster clients only
+	keys_per_client=$((total_keys / num_clients_per_dc))
+
+	# track the number of written keys and make sure we get the correct total
+
+	pop_pids=""
+	for dc in 0; do
+	    local_servers_csv=$(echo ${servers_by_dc[$dc]} | sed 's/ /,/g')
+
+	    for cli_index in $(seq 0 $((num_clients_per_dc - 1))); do
+		client=$(echo ${clients_by_dc[$dc]} | sed 's/ /\n/g' | head -n $((cli_index+1)) | tail -n 1)
+
+	        #all_servers_csv=$(echo $all_servers | sed 's/ /,/g')
+		first_dc_servers_csv=$(echo ${servers_by_dc[0]} | sed 's/ /,/g')
+
+	        #write to ALL so the cluster is populated everywhere
+	        ssh $client -t -t -o StrictHostKeyChecking=no "\
+sudo mkdir -p /local/${dynamic_dir}/${exp_uid}; \
+sudo chown wlloyd /local/${dynamic_dir}; \
+sudo chown wlloyd /local/${dynamic_dir}/${exp_uid};"
+	        ssh $client -o StrictHostKeyChecking=no "\
+$stress_killer; sleep 1; \
+cd ${src_dir}/tools/stress; \
+bin/stress \
+--nodes=$first_dc_servers_csv \
+--columns=$max_columns \
+--column-size=$column_size \
+--operation=${insert_cmd} \
+--consistency-level=LOCAL_QUORUM \
+--replication-strategy=NetworkTopologyStrategy \
+--strategy-properties=$strategy_properties \
+--num-different-keys=$keys_per_client \
+--num-keys=$keys_per_client \
+--stress-index=$cli_index \
+--stress-count=$num_clients_per_dc \
+ > >(tee /local/${dynamic_dir}/${exp_uid}/populate.out) \
+2> >(tee /local/${dynamic_dir}/${exp_uid}/populate.err) \
+" 2>&1 | awk '{ print "'$client': "$0 }' &
+	        pop_pid=$!
+	        pop_pids="$pop_pids $pop_pid"
+	    done
+	done
+
+	#wait for clients to finish
+	for pop_pid in $pop_pids; do
+	    echo "Waiting on $pop_pid"
+	    wait $pop_pid
+	done
+
+	sleep 1
+
+	kill $killall_ssh_pid
+	# if we kill killall successfully, it will return 0 and that means we populated the cluster and can continue
+	#  otherwise we try again
+	killed_killall=$?
+
+	# check the number of keys written on each node
+	total_keys_written=0
+	for dc in 0; do
+	    for cli_index in $(seq 0 $((num_clients_per_dc - 1))); do
+		client=$(echo ${clients_by_dc[$dc]} | sed 's/ /\n/g' | head -n $((cli_index+1)) | tail -n 1)
+		keys_written=$(ssh $client -t -t -o StrictHostKeyChecking=no "cat /local/${dynamic_dir}/${exp_uid}/populate.out | grep ,*,*,*,*,*, | tail -n 1 | awk -F , '{ print "'$1'" }' ")
+		keys_written=$(echo $keys_written | egrep -o '[0-9]*') # eliminate whitespace
+		echo -e "$client\t$keys_written"
+		
+		total_keys_written=$((total_keys_written + keys_written))
+	    done
+	done
+	echo -e "TOTAL KEYS WRITTEN\t$total_keys_written"
+
+	if [ $killed_killall == "0" ] && [ $total_keys_written == $total_keys ]; then
+	   break;
+	fi
+	((populate_attempts++))
+	if [[ $populate_attempts -ge $MAX_ATTEMPTS ]]; then
+	   echo -e "\n\n \e[01;31m Could not populate the cluster after $MAX_ATTEMPTS attempts \e[0m \n\n"
+	   exit;
+	fi
+	echo -e "\e[01;31m Failed populating $populate_attempts times, trying again (out of $MAX_ATTEMPTS) \e[0m"
+      done
+    }
+
+
+    cops_run_experiment() {
+	internal_run_experiment $@ $cops_dir cops2
+    }
+
+    vanilla_run_experiment() {
+	internal_run_experiment $@ $vanilla_dir vanilla
+    }
+
+    #all_servers is set above
+    #num_clients is set above
+    #all_clients is set above
+    internal_run_experiment() {
+	total_keys=$1
+	column_size=$2
+	cols_per_key_read=$3
+	cols_per_key_write=$4
+	keys_per_read=$5
+	keys_per_write=$6
+	write_frac=$7
+	write_trans_frac=$8
+	exp_time=$9
+	variable=${10}
+	trial=${11}
+	src_dir=${12}
+	cluster_type=${13}
+
+	cli_output_dir="/local/${dynamic_dir}/${exp_uid}/${cluster_type}/trial${trial}"
+	data_file_name=$1_$2_$3_$4_$5_$6_$7_$8_$9+${10}+data
+
+	#divide keys across first cluster clients only
+	keys_per_client=$((total_keys / num_clients_per_dc))
+
+	for dc in $(seq 0 $((num_dcs - 1))); do
+	#for dc in 0; do
+	    local_servers_csv=$(echo ${servers_by_dc[$dc]} | sed 's/ /,/g')
+
+	    for cli_index in $(seq 0 $((num_clients_per_dc - 1))); do
+		client=$(echo ${clients_by_dc[$dc]} | sed 's/ /\n/g' | head -n $((cli_index+1)) | tail -n 1)
+
+# ulimit -Sn 16384
+
+		ssh $client -t -t -o StrictHostKeyChecking=no "\
+sudo mkdir -p $cli_output_dir; \
+sudo chown wlloyd $cli_output_dir;"
+		ssh $client -o StrictHostKeyChecking=no "\
+cd ${src_dir}/tools/stress; \
+((bin/stress \
+--progress-interval=1 \
+--nodes=$local_servers_csv \
+--consistency-level=LOCAL_QUORUM \
+--replication-strategy=NetworkTopologyStrategy \
+--strategy-properties=$strategy_properties \
+--operation=DYNAMIC \
+--num-different-keys=$total_keys \
+--stress-index=$cli_index \
+--stress-count=$num_clients_per_dc \
+--num-keys=20000000 \
+--column-size=$column_size \
+--columns-per-key-read=$cols_per_key_read \
+--columns-per-key-write=$cols_per_key_write \
+--keys-per-read=$keys_per_read \
+--keys-per-write=$keys_per_write \
+--write-fraction=$write_frac \
+--write-transaction-fraction=$write_trans_frac \
+--threads=32 \
+ > >(tee ${cli_output_dir}/${data_file_name}) \
+2> ${cli_output_dir}/${data_file_name}.stderr \
+) &); \
+sleep $((exp_time + 10)); ${src_dir}/kill_stress_vicci.bash" \
+2>&1 | awk '{ print "'$client': "$0 }' &
+	    done
+	done
+
+# NOTE TO SELF, CANT HAVE EMPTY LINES IN CMD...
+# --operation=DYNAMIC_ONE_SERVER \
+# --num-servers=$num_clients_per_dc \
+# --server-index=$cli_index \
+## NOTE this doesn't change with the new patch --num-different-keys=$total_keys \
+
+
+
+	#wait for clients to finish
+	wait
+    }
+
+
+
+    gather_results() {
+	for dc in $(seq 0 $((num_dcs - 1))); do
+	#for dc in 0; do
+            for cli_index in $(seq 0 $((num_clients_per_dc - 1))); do
+		client_dir=${output_dir}/client$((cli_index + dc*num_clients_per_dc))
+		client=$(echo ${clients_by_dc[$dc]} | sed 's/ /\n/g' | head -n $((cli_index+1)) | tail -n 1)
+		rsync -az $client:/local/${dynamic_dir}/${exp_uid}/* ${client_dir}
+	    done
+	done
+    }
+

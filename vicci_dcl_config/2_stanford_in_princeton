@@ -1,0 +1,3 @@
+num_dcs=2
+cassandra_ips=node1.stanford.vicci.org
+cassandra_ips=node2.stanford.vicci.org
