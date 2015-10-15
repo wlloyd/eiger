@@ -49,3 +49,23 @@ Getting started
 ---------------
 
 Please see the documentation for Cassandra.
+
+Running Eiger
+-------------
+If you're just trying to a run a small cluster on your own machine then you want to use the cassandra_dc_launcher.bash script. If you're trying to run on a real cluster of machine checkout the kodiak_dc_launcher.bash script. The local script has only been tested on macs. And both still have somethings hard coded in them (or in the base configuration files) that need to be changed, see the other open issues for some pointers.
+
+Fork Point From Cassandra & Tips For Understanding Our Changes
+--------------------------------------------------------------
+Forked from 44a7db706885430128d305adb56899595eccc8ae, which is just a few commits after the cassandra 1.0.7 release.
+
+The best places to look at my new code to see where things change would be the thrift interface (this is only for client<->server communication):
+interface/cassandra.thrift
+
+and the new code:
+git diff --stat 44a7db706885430128d305adb56899595eccc8ae src/java/org/apache/cassandra/* | sort -nrk 3
+
+and the tests I wrote:
+git diff --stat 44a7db706885430128d305adb56899595eccc8ae test/unit/org/apache/cassandra/ | sort -nrk 3
+
+The other thing to know starting off is that server<->server communication is done by sending XYZMessages that are handled by XYZVerbHandlers.
+
